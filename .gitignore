@@ -1,0 +1,11 @@
+node_modules
+out
+release
+.DS_Store
+*.log
+e2e/_screens
+e2e/_results
+/tmp
+playwright-report
+test-results
+WhatsApp Image*.jpeg
