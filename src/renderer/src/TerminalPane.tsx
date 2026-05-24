@@ -240,10 +240,18 @@ export function TerminalPane(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focused, spec.id, spec.cwd]);
 
+  // When this pane's visibility changes (zoom toggle, or focus change in
+  // tabs/zoom modes where unfocused panes are display:none), re-fit AND force
+  // a repaint. fit() alone is a no-op when cols/rows are unchanged, which
+  // leaves the DOM renderer showing a blank buffer after the pane reappears.
   useEffect(() => {
-    const id = setTimeout(() => safeFit(fitRef.current), 60);
+    const id = setTimeout(() => {
+      safeFit(fitRef.current);
+      const term = termRef.current;
+      if (term) term.refresh(0, term.rows - 1);
+    }, 60);
     return () => clearTimeout(id);
-  }, [zoomed]);
+  }, [zoomed, focused]);
 
   // Apply live settings changes
   useEffect(() => {
