@@ -131,7 +131,11 @@ export function TerminalPane(props: Props) {
     fitRef.current = fit;
     registerTerminal(spec.id, term);
 
-    // ⌘C copies selection, ⌘V pastes — let xterm fall through to our handlers
+    // ⌘C/Ctrl+C copies the selection when there is one, otherwise falls through
+    // as SIGINT. Paste is intentionally NOT handled here — xterm's native paste
+    // (via the Edit-menu role and browser default) already does it once and
+    // honors bracketed-paste mode. Handling ⌘V here too caused double pastes and
+    // auto-running commands on a trailing newline.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
       const mod = ev.metaKey || ev.ctrlKey;
@@ -144,13 +148,6 @@ export function TerminalPane(props: Props) {
           return false; // we handled it
         }
         return true; // no selection — let Ctrl+C reach the shell
-      }
-      if (k === 'v') {
-        void navigator.clipboard
-          .readText()
-          .then((t) => t && window.api.pty.write(spec.id, t))
-          .catch(() => undefined);
-        return false;
       }
       return true;
     });
