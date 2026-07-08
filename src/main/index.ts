@@ -5,6 +5,7 @@ import { dirname } from 'path';
 import { PtyManager } from './pty-manager.js';
 import { Store } from './store.js';
 import { RemoteServer } from './remote-server.js';
+import { ensureTailscaleUp } from './tailscale-manager.js';
 import { registerShortcuts, unregisterShortcuts } from './shortcuts.js';
 import { installAppMenu } from './menu.js';
 import { IPC } from '../shared/types.js';
@@ -15,7 +16,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 const pty = new PtyManager();
 const store = new Store();
-store.setSettings({ ...store.getSettings(), remoteEnabled: false });
 
 function sendLayoutChanged(layout: LayoutState): void {
   mainWindow?.webContents.send(IPC.LAYOUT_CHANGED, layout);
@@ -31,6 +31,23 @@ const remote = new RemoteServer({
   onLayoutChanged: sendLayoutChanged,
   onStatusChanged: sendRemoteStatus,
 });
+
+async function startRemoteFromSettings(settings: AppSettings): Promise<RemoteStatus> {
+  const tailscale =
+    settings.remoteBindHost !== '127.0.0.1'
+      ? await ensureTailscaleUp()
+      : undefined;
+  return remote.start({
+    port: settings.remotePort,
+    bindHost: settings.remoteBindHost,
+    tailscale: tailscale
+      ? {
+          tailscaleState: tailscale.state,
+          tailscaleError: tailscale.ok ? undefined : tailscale.error,
+        }
+      : undefined,
+  });
+}
 
 function createWindow() {
   const ws = store.getWindow();
@@ -136,9 +153,7 @@ app.whenReady().then(() => {
     const current = store.getSettings();
     store.setSettings(s);
     if (s.remoteEnabled && !current.remoteEnabled) {
-      void remote
-        .start({ port: s.remotePort, bindHost: s.remoteBindHost })
-        .catch(() => store.setSettings({ ...store.getSettings(), remoteEnabled: false }));
+      void startRemoteFromSettings(s).catch(() => store.setSettings({ ...store.getSettings(), remoteEnabled: false }));
     } else if (!s.remoteEnabled && current.remoteEnabled) {
       void remote.stop();
     }
@@ -154,7 +169,7 @@ app.whenReady().then(() => {
       remoteBindHost: opts?.bindHost ?? settings.remoteBindHost ?? '0.0.0.0',
     };
     store.setSettings(next);
-    return remote.start({ port: next.remotePort, bindHost: next.remoteBindHost });
+    return startRemoteFromSettings(next);
   });
   ipcMain.handle(IPC.REMOTE_DISABLE, async () => {
     store.setSettings({ ...store.getSettings(), remoteEnabled: false });
@@ -163,6 +178,13 @@ app.whenReady().then(() => {
 
   installAppMenu();
   createWindow();
+
+  const settings = store.getSettings();
+  if (settings.remoteEnabled) {
+    void startRemoteFromSettings(settings).catch(() => {
+      store.setSettings({ ...store.getSettings(), remoteEnabled: false });
+    });
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -21,6 +21,7 @@ interface RemoteServerOptions {
 }
 
 const require = createRequire(import.meta.url);
+type TailscaleRemoteState = Pick<RemoteStatus, 'tailscaleState' | 'tailscaleError'>;
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
@@ -97,8 +98,23 @@ function localUrls(port: number, bindHost: BindHost): string[] {
   return [...urls];
 }
 
+// IPv4-only, matching the existing IPv4-only scope of localUrls(). Tailscale also
+// hands out IPv6 in fd7a:115c:a1e0::/48 — not detected here, same boundary as before.
+function isTailscaleIp(host: string): boolean {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  return a === 100 && b >= 64 && b <= 127;
+}
+
+function tailscaleUrls(urls: string[]): string[] {
+  return urls.filter((url) => isTailscaleIp(new URL(url).hostname));
+}
+
 function preferredRemoteUrl(urls: string[]): string | undefined {
-  return urls.find((url) => !url.includes('localhost') && !url.includes('127.0.0.1')) ?? urls[0];
+  const nonLocal = urls.filter((url) => !url.includes('localhost') && !url.includes('127.0.0.1'));
+  return nonLocal.find((url) => isTailscaleIp(new URL(url).hostname)) ?? nonLocal[0] ?? urls[0];
 }
 
 function tokenFromRequest(req: IncomingMessage, url: URL): string | null {
@@ -119,9 +135,12 @@ export class RemoteServer {
   private pairingCode: string | null = null;
   private pairingHash: string | null = null;
   private pairingQrDataUrl: string | null = null;
+  private pairingQrUrl: string | null = null;
   private port = 17321;
   private bindHost: BindHost = '0.0.0.0';
   private error: string | undefined;
+  private tailscaleState: TailscaleRemoteState = {};
+  private statusTimer: NodeJS.Timeout | null = null;
 
   constructor(options: RemoteServerOptions) {
     this.pty = options.pty;
@@ -134,17 +153,15 @@ export class RemoteServer {
     this.pty.on('resize', (id, cols, rows) => this.broadcastPty(id, { type: 'resize', cols, rows }));
   }
 
-  async start(opts: { port?: number; bindHost?: BindHost }): Promise<RemoteStatus> {
+  async start(opts: { port?: number; bindHost?: BindHost; tailscale?: TailscaleRemoteState }): Promise<RemoteStatus> {
     if (this.server) await this.stop();
     this.port = safePort(opts.port);
     this.bindHost = opts.bindHost ?? '0.0.0.0';
+    this.tailscaleState = opts.tailscale ?? {};
     this.error = undefined;
     const pairingCode = randomBytes(4).toString('hex');
     this.pairingCode = pairingCode;
     this.pairingHash = hash(pairingCode);
-    const firstUrl = preferredRemoteUrl(localUrls(this.port, this.bindHost)) ?? `http://localhost:${this.port}/remote`;
-    const pairingUrl = `${firstUrl}?pair=${encodeURIComponent(pairingCode)}`;
-    this.pairingQrDataUrl = await QRCode.toDataURL(pairingUrl, { margin: 1, width: 240 });
 
     this.server = http.createServer((req, res) => {
       void this.handleHttp(req, res).catch(() => json(res, 500, { error: 'internal error' }));
@@ -169,15 +186,18 @@ export class RemoteServer {
       throw err;
     });
 
+    this.startStatusPolling();
     this.emitStatus();
-    return this.getStatus();
+    return await this.getStatus();
   }
 
   async stop(): Promise<RemoteStatus> {
+    this.stopStatusPolling();
     this.sessionTokens.clear();
     this.pairingCode = null;
     this.pairingHash = null;
     this.pairingQrDataUrl = null;
+    this.pairingQrUrl = null;
     for (const client of this.clients) client.close(1001, 'remote disabled');
     this.clients.clear();
     await new Promise<void>((resolve) => {
@@ -186,19 +206,31 @@ export class RemoteServer {
       this.closeServerHandles();
     });
     this.emitStatus();
-    return this.getStatus();
+    return await this.getStatus();
   }
 
-  getStatus(): RemoteStatus {
+  async getStatus(): Promise<RemoteStatus> {
     const urls = localUrls(this.port, this.bindHost);
+    const tailUrls = tailscaleUrls(urls);
     const preferredUrl = preferredRemoteUrl(urls);
+    const pairingUrl = this.pairingCode && preferredUrl ? `${preferredUrl}?pair=${encodeURIComponent(this.pairingCode)}` : null;
+    if (pairingUrl && pairingUrl !== this.pairingQrUrl) {
+      this.pairingQrDataUrl = await QRCode.toDataURL(pairingUrl, { margin: 1, width: 240 });
+      this.pairingQrUrl = pairingUrl;
+    } else if (!pairingUrl) {
+      this.pairingQrDataUrl = null;
+      this.pairingQrUrl = null;
+    }
     return {
       enabled: Boolean(this.server),
       running: Boolean(this.server?.listening),
       port: this.port,
       bindHost: this.bindHost,
       urls,
-      pairingUrl: this.pairingCode && preferredUrl ? `${preferredUrl}?pair=${encodeURIComponent(this.pairingCode)}` : null,
+      tailscaleUrls: tailUrls,
+      tailscaleState: this.tailscaleState.tailscaleState,
+      tailscaleError: tailUrls.length > 0 ? undefined : this.tailscaleState.tailscaleError,
+      pairingUrl,
       pairingCode: this.pairingCode,
       pairingQrDataUrl: this.pairingQrDataUrl,
       clientCount: this.clients.size,
@@ -405,13 +437,24 @@ export class RemoteServer {
   }
 
   private emitStatus(): void {
-    this.onStatusChanged(this.getStatus());
+    void this.getStatus().then((status) => this.onStatusChanged(status));
   }
 
   private closeServerHandles(): void {
     this.wss?.close();
     this.wss = null;
     this.server = null;
+  }
+
+  private startStatusPolling(): void {
+    this.stopStatusPolling();
+    this.statusTimer = setInterval(() => this.emitStatus(), 2000);
+    this.statusTimer.unref?.();
+  }
+
+  private stopStatusPolling(): void {
+    if (this.statusTimer) clearInterval(this.statusTimer);
+    this.statusTimer = null;
   }
 
   private serveVendor(res: ServerResponse, specifier: string, type: string): void {
@@ -445,7 +488,7 @@ function remoteHtml(): string {
     button.primary { background:var(--accent); border-color:var(--accent); }
     button.danger { color:var(--danger); }
     #sessionSelect { flex:1; min-width:0; }
-    #terminal { flex:1; min-height:0; padding:6px; overflow:auto; }
+    #terminal { flex:1; min-height:0; padding:6px; overflow:auto; touch-action:none; overscroll-behavior:contain; }
     #terminal .xterm { display:inline-block; min-width:100%; }
     #pair { position:fixed; inset:0; display:none; align-items:center; justify-content:center; padding:20px; background:var(--bg); z-index:10; }
     #pair form { width:min(420px,100%); display:grid; gap:12px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
@@ -477,9 +520,14 @@ function remoteHtml(): string {
   <div id="keys">
     <button data-key="ctrl-c">Ctrl+C</button>
     <button class="accent" data-key="shift-tab">Shift+Tab</button>
+    <button class="accent" data-key="ctrl-u">Ctrl+U</button>
     <button data-key="tab">Tab</button>
     <button data-key="enter">Enter</button>
     <button data-key="esc">Esc</button>
+    <button data-scroll="up">Scroll ↑</button>
+    <button data-scroll="down">Scroll ↓</button>
+    <button data-pan="left">Scroll ←</button>
+    <button data-pan="right">Scroll →</button>
     <button data-key="up">↑</button>
     <button data-key="down">↓</button>
     <button data-key="left">←</button>
@@ -497,8 +545,14 @@ function remoteHtml(): string {
     let sessions = [];
     let activeId = '';
     let socket = null;
+    const terminalEl = document.getElementById('terminal');
+    const wheelPulseCount = 3;
+    const touchPanThreshold = 18;
+    const horizontalPanPixels = 160;
+    let lastTouch = null;
     const helperKeys = {
       'ctrl-c': String.fromCharCode(3),
+      'ctrl-u': String.fromCharCode(21),
       'shift-tab': String.fromCharCode(27) + '[Z',
       tab: String.fromCharCode(9),
       enter: String.fromCharCode(13),
@@ -509,10 +563,27 @@ function remoteHtml(): string {
       right: String.fromCharCode(27) + '[C',
     };
     const term = new Terminal({ cursorBlink:true, fontSize:13, fontFamily:'SF Mono, Menlo, Consolas, monospace', scrollback: 5000, cols:80, rows:24, theme:{ background:'#0a0a0c', foreground:'#e6e6ec', cursor:'#7c5cff' } });
-    term.open(document.getElementById('terminal'));
+    term.open(terminalEl);
     term.onData((data) => {
-      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:'input', data }));
+      sendInput(data);
     });
+    function sendInput(data) {
+      if (data && socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:'input', data }));
+    }
+    function mouseWheelSequence(direction) {
+      const code = direction === 'up' ? 64 : 65;
+      const x = Math.max(1, Math.floor(term.cols / 2));
+      const y = Math.max(1, Math.floor(term.rows / 2));
+      return String.fromCharCode(27) + '[<' + code + ';' + x + ';' + y + 'M';
+    }
+    function sendWheel(direction, count = 1) {
+      let data = '';
+      for (let i = 0; i < count; i++) data += mouseWheelSequence(direction);
+      sendInput(data);
+    }
+    function panHorizontal(direction, pixels = horizontalPanPixels) {
+      terminalEl.scrollLeft += direction === 'left' ? -pixels : pixels;
+    }
     function authHeaders() { return { authorization: 'Bearer ' + token, 'content-type': 'application/json' }; }
     async function api(path, opts = {}) {
       const res = await fetch(path, { ...opts, headers: { ...authHeaders(), ...(opts.headers || {}) } });
@@ -555,8 +626,9 @@ function remoteHtml(): string {
       const dims = dimensionsFor(id);
       const cols = Math.max(10, Number(dims.cols) || 80);
       const rows = Math.max(5, Number(dims.rows) || 24);
+      const atBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
-      term.scrollToBottom();
+      if (atBottom) term.scrollToBottom();
     }
     function renderSessions() {
       const select = document.getElementById('sessionSelect');
@@ -586,8 +658,9 @@ function remoteHtml(): string {
           applyTerminalDimensions(activeId);
         }
         if (msg.type === 'data' && (!msg.id || msg.id === activeId)) {
+          const atBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
           term.write(msg.data);
-          queueMicrotask(() => term.scrollToBottom());
+          if (atBottom) queueMicrotask(() => term.scrollToBottom());
         }
         if (msg.type === 'sessions') {
           sessions = msg.sessions.sessions || [];
@@ -605,7 +678,8 @@ function remoteHtml(): string {
       socket.onclose = () => term.writeln('\r\n[disconnected]');
     }
     function keepBottomVisible() {
-      term.scrollToBottom();
+      const atBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
+      if (atBottom) term.scrollToBottom();
     }
     document.getElementById('pairForm').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -627,10 +701,48 @@ function remoteHtml(): string {
       await loadSessions();
     });
     document.getElementById('keys').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-send], button[data-key]');
-      const data = btn ? (btn.dataset.send || helperKeys[btn.dataset.key]) : '';
-      if (data && socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:'input', data }));
+      const btn = e.target.closest('button[data-send], button[data-key], button[data-scroll], button[data-pan]');
+      if (!btn) return;
+      if (btn.dataset.scroll) {
+        sendWheel(btn.dataset.scroll, wheelPulseCount);
+        return;
+      }
+      if (btn.dataset.pan) {
+        panHorizontal(btn.dataset.pan);
+        return;
+      }
+      sendInput(btn.dataset.send || helperKeys[btn.dataset.key]);
     });
+    terminalEl.addEventListener('wheel', (e) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && Math.abs(e.deltaX) >= 1) {
+        e.preventDefault();
+        terminalEl.scrollLeft += e.deltaX;
+        return;
+      }
+      if (Math.abs(e.deltaY) < 1) return;
+      e.preventDefault();
+      sendWheel(e.deltaY < 0 ? 'up' : 'down');
+    }, { passive:false });
+    terminalEl.addEventListener('touchstart', (e) => {
+      const touch = e.touches[0];
+      lastTouch = touch ? { x: touch.clientX, y: touch.clientY } : null;
+    }, { passive:true });
+    terminalEl.addEventListener('touchmove', (e) => {
+      const touch = e.touches[0];
+      if (!lastTouch || !touch) return;
+      const deltaX = touch.clientX - lastTouch.x;
+      const deltaY = touch.clientY - lastTouch.y;
+      if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < touchPanThreshold) return;
+      e.preventDefault();
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        terminalEl.scrollLeft -= deltaX;
+      } else {
+        sendWheel(deltaY > 0 ? 'up' : 'down');
+      }
+      lastTouch = { x: touch.clientX, y: touch.clientY };
+    }, { passive:false });
+    terminalEl.addEventListener('touchend', () => { lastTouch = null; }, { passive:true });
+    terminalEl.addEventListener('touchcancel', () => { lastTouch = null; }, { passive:true });
     window.addEventListener('resize', keepBottomVisible);
     window.addEventListener('orientationchange', () => setTimeout(keepBottomVisible, 250));
     setTimeout(keepBottomVisible, 0);

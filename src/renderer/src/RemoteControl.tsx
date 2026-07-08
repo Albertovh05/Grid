@@ -7,6 +7,7 @@ const defaultStatus: RemoteStatus = {
   port: 17321,
   bindHost: '0.0.0.0',
   urls: [],
+  tailscaleUrls: [],
   pairingUrl: null,
   pairingCode: null,
   pairingQrDataUrl: null,
@@ -55,7 +56,8 @@ export function RemoteControl() {
     }
   };
 
-  const primaryUrl = status.urls.find((url) => !url.includes('localhost')) ?? status.urls[0];
+  const primaryUrl = status.tailscaleUrls[0] ?? status.urls.find((url) => !url.includes('localhost')) ?? status.urls[0];
+  const isTailscale = Boolean(primaryUrl && status.tailscaleUrls.includes(primaryUrl));
 
   return (
     <section className="remote-panel">
@@ -82,8 +84,17 @@ export function RemoteControl() {
               title={primaryUrl}
               onClick={() => void navigator.clipboard.writeText(primaryUrl)}
             >
-              Copy URL
+              Copy {isTailscale ? 'Tailscale' : 'LAN'} URL
             </button>
+          )}
+          {status.tailscaleUrls.length === 0 && (
+            <>
+              <div className={status.tailscaleError ? 'remote-error' : 'remote-meta'}>
+                {status.tailscaleError ??
+                  'Only reachable on this Wi-Fi network. Install Tailscale on this computer and your phone to control it from anywhere.'}
+              </div>
+              {status.tailscaleState && <div className="remote-meta">Tailscale: {status.tailscaleState}</div>}
+            </>
           )}
           <button className="remote-disable" disabled={busy} onClick={disable}>
             Disable

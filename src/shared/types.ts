@@ -61,6 +61,9 @@ export interface RemoteStatus {
   port: number;
   bindHost: '127.0.0.1' | '0.0.0.0';
   urls: string[];
+  tailscaleUrls: string[];
+  tailscaleState?: string;
+  tailscaleError?: string;
   pairingUrl: string | null;
   pairingCode: string | null;
   pairingQrDataUrl: string | null;
