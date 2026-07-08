@@ -601,9 +601,13 @@ function remoteHtml(): string {
     #pair form { width:min(420px,100%); display:grid; gap:12px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
     #pair h1 { font-size:20px; margin:0; }
     #pair p, #status { color:var(--muted); margin:0; font-size:13px; }
-    #keys { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; padding:6px; border-top:1px solid var(--border); background:var(--panel); }
+    #keys { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; padding:6px; padding-bottom:max(6px, env(safe-area-inset-bottom)); border-top:1px solid var(--border); background:var(--panel); }
     #keys button { padding:10px 2px; font-size:13px; }
     #keys button.accent { background:var(--accent); border-color:var(--accent); color:white; font-weight:600; }
+    #keysToggle { grid-column:1 / -1; padding:8px; color:var(--muted); }
+    body.keys-collapsed #keys { grid-template-columns:1fr; }
+    body.keys-collapsed #keys .shortcut-key { display:none; }
+    body.keys-collapsed #keysToggle { color:var(--fg); }
     @media (max-width: 520px) { #keys { grid-template-columns:repeat(4,1fr); } }
   </style>
 </head>
@@ -625,25 +629,26 @@ function remoteHtml(): string {
   </header>
   <div id="terminal"></div>
   <div id="keys">
-    <button data-key="ctrl-c">Ctrl+C</button>
-    <button class="accent" data-key="shift-tab">Shift+Tab</button>
-    <button class="accent" data-key="ctrl-u">Ctrl+U</button>
-    <button data-key="tab">Tab</button>
-    <button data-key="enter">Enter</button>
-    <button data-key="esc">Esc</button>
-    <button data-scroll="up">Scroll ↑</button>
-    <button data-scroll="down">Scroll ↓</button>
-    <button data-pan="left">Scroll ←</button>
-    <button data-pan="right">Scroll →</button>
-    <button data-key="up">↑</button>
-    <button data-key="down">↓</button>
-    <button data-key="left">←</button>
-    <button data-key="right">→</button>
-    <button data-send="1">1</button>
-    <button data-send="2">2</button>
-    <button data-send="3">3</button>
-    <button data-send="4">4</button>
-    <button data-send="5">5</button>
+    <button id="keysToggle" type="button" aria-expanded="true">Hide shortcuts</button>
+    <button class="shortcut-key" data-key="ctrl-c">Ctrl+C</button>
+    <button class="shortcut-key accent" data-key="shift-tab">Shift+Tab</button>
+    <button class="shortcut-key accent" data-key="ctrl-u">Ctrl+U</button>
+    <button class="shortcut-key" data-key="tab">Tab</button>
+    <button class="shortcut-key" data-key="enter">Enter</button>
+    <button class="shortcut-key" data-key="esc">Esc</button>
+    <button class="shortcut-key" data-scroll="up">Scroll ↑</button>
+    <button class="shortcut-key" data-scroll="down">Scroll ↓</button>
+    <button class="shortcut-key" data-pan="left">Scroll ←</button>
+    <button class="shortcut-key" data-pan="right">Scroll →</button>
+    <button class="shortcut-key" data-key="up">↑</button>
+    <button class="shortcut-key" data-key="down">↓</button>
+    <button class="shortcut-key" data-key="left">←</button>
+    <button class="shortcut-key" data-key="right">→</button>
+    <button class="shortcut-key" data-send="1">1</button>
+    <button class="shortcut-key" data-send="2">2</button>
+    <button class="shortcut-key" data-send="3">3</button>
+    <button class="shortcut-key" data-send="4">4</button>
+    <button class="shortcut-key" data-send="5">5</button>
   </div>
   <script src="/vendor/xterm.js"></script>
   <script>
@@ -653,6 +658,7 @@ function remoteHtml(): string {
     let activeId = '';
     let socket = null;
     const terminalEl = document.getElementById('terminal');
+    const keysToggle = document.getElementById('keysToggle');
     const wheelPulseCount = 3;
     const touchPanThreshold = 18;
     const horizontalPanPixels = 160;
@@ -674,6 +680,13 @@ function remoteHtml(): string {
     term.onData((data) => {
       sendInput(data);
     });
+    function setKeysCollapsed(collapsed) {
+      document.body.classList.toggle('keys-collapsed', collapsed);
+      keysToggle.textContent = collapsed ? 'Show shortcuts' : 'Hide shortcuts';
+      keysToggle.setAttribute('aria-expanded', String(!collapsed));
+      localStorage.setItem('gridRemoteKeysCollapsed', collapsed ? '1' : '0');
+      keepBottomVisible();
+    }
     function sendInput(data) {
       if (data && socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:'input', data }));
     }
@@ -807,6 +820,9 @@ function remoteHtml(): string {
       await api('/api/sessions/' + encodeURIComponent(activeId), { method:'DELETE' });
       await loadSessions();
     });
+    keysToggle.addEventListener('click', () => {
+      setKeysCollapsed(!document.body.classList.contains('keys-collapsed'));
+    });
     document.getElementById('keys').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-send], button[data-key], button[data-scroll], button[data-pan]');
       if (!btn) return;
@@ -852,6 +868,7 @@ function remoteHtml(): string {
     terminalEl.addEventListener('touchcancel', () => { lastTouch = null; }, { passive:true });
     window.addEventListener('resize', keepBottomVisible);
     window.addEventListener('orientationchange', () => setTimeout(keepBottomVisible, 250));
+    setKeysCollapsed(localStorage.getItem('gridRemoteKeysCollapsed') === '1');
     setTimeout(keepBottomVisible, 0);
     ensurePaired().catch((err) => {
       document.getElementById('pair').style.display = 'flex';
