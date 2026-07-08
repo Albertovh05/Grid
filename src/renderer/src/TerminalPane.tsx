@@ -62,6 +62,12 @@ function safeFit(fit: FitAddon | null): boolean {
   }
 }
 
+function syncDesktopPtySize(id: string, term: Terminal | null, fit: FitAddon | null): void {
+  if (!term || !fit) return;
+  safeFit(fit);
+  window.api.pty.resize(id, term.cols, term.rows);
+}
+
 export function TerminalPane(props: Props) {
   const { spec, focused, zoomed, onFocus, onClose, onZoom, onRename } = props;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -190,7 +196,7 @@ export function TerminalPane(props: Props) {
         const rect = hostRef.current?.getBoundingClientRect();
         if (rect && rect.width > 20 && rect.height > 20) startPty(term, fit);
       } else {
-        safeFit(fit);
+        syncDesktopPtySize(spec.id, term, fit);
       }
     });
     ro.observe(hostRef.current);
@@ -221,6 +227,8 @@ export function TerminalPane(props: Props) {
   useEffect(() => {
     if (focused) {
       termRef.current?.focus();
+      syncDesktopPtySize(spec.id, termRef.current, fitRef.current);
+      termRef.current?.scrollToBottom();
       clearActivity(spec.id);
     }
   }, [focused, zoomed, spec.id]);
@@ -249,12 +257,15 @@ export function TerminalPane(props: Props) {
   // leaves the DOM renderer showing a blank buffer after the pane reappears.
   useEffect(() => {
     const id = setTimeout(() => {
-      safeFit(fitRef.current);
       const term = termRef.current;
-      if (term) term.refresh(0, term.rows - 1);
+      syncDesktopPtySize(spec.id, term, fitRef.current);
+      if (term) {
+        term.scrollToBottom();
+        term.refresh(0, term.rows - 1);
+      }
     }, 60);
     return () => clearTimeout(id);
-  }, [zoomed, focused]);
+  }, [zoomed, focused, spec.id]);
 
   // Apply live settings changes
   useEffect(() => {
@@ -262,8 +273,8 @@ export function TerminalPane(props: Props) {
     termRef.current.options.fontSize = props.fontSize;
     termRef.current.options.fontFamily = props.fontFamily;
     termRef.current.options.theme = props.themeMode === 'light' ? lightTheme : darkTheme;
-    setTimeout(() => safeFit(fitRef.current), 50);
-  }, [props.fontSize, props.fontFamily, props.themeMode]);
+    setTimeout(() => syncDesktopPtySize(spec.id, termRef.current, fitRef.current), 50);
+  }, [props.fontSize, props.fontFamily, props.themeMode, spec.id]);
 
   // Listen for context-menu-dispatched restart/clear events for this terminal
   useEffect(() => {

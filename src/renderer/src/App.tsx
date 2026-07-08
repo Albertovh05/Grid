@@ -3,6 +3,7 @@ import { useLayout } from './useLayout';
 import { useSettings } from './useSettings';
 import { TerminalPane } from './TerminalPane';
 import { SidebarItem } from './SidebarItem';
+import { RemoteControl } from './RemoteControl';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { getAllTerminals } from './termRegistry';
 import { CommandPalette, type PaletteCommand } from './CommandPalette';
@@ -353,6 +354,7 @@ export function App() {
               + New (⌘T)
             </button>
           </div>
+          <RemoteControl />
         </aside>
         {sidebarVisible && (
           <div

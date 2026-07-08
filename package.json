@@ -19,21 +19,25 @@
     "rebuild": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "electron-store": "^10.0.0",
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.0.0",
+    "qrcode": "^1.5.4",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
     "@playwright/test": "^1.59.1",
     "@types/node": "^22.5.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.1",
-    "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-web-links": "^0.11.0",
-    "@xterm/xterm": "^5.5.0",
     "electron": "^32.0.0",
     "electron-builder": "^25.0.5",
     "electron-rebuild": "^3.2.9",

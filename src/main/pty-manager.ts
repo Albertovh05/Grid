@@ -7,6 +7,8 @@ import fs from 'fs';
 interface PtySession {
   id: string;
   proc: IPty;
+  cols: number;
+  rows: number;
 }
 
 const ELECTRON_ENV_PREFIXES = ['ELECTRON_', 'CHROME_', 'GOOGLE_API_KEY'];
@@ -67,10 +69,13 @@ function safeDims(cols: number, rows: number): { cols: number; rows: number } {
 export interface PtyManager {
   on(event: 'data', listener: (id: string, data: string) => void): this;
   on(event: 'exit', listener: (id: string, exitCode: number, signal?: number) => void): this;
+  on(event: 'resize', listener: (id: string, cols: number, rows: number) => void): this;
 }
 
 export class PtyManager extends EventEmitter {
   private sessions = new Map<string, PtySession>();
+  private scrollback = new Map<string, string>();
+  private readonly maxScrollbackBytes = 200_000;
 
   create(opts: { id: string; cols: number; rows: number; cwd?: string; shell?: string }): { id: string } {
     if (this.sessions.has(opts.id)) return { id: opts.id };
@@ -88,6 +93,7 @@ export class PtyManager extends EventEmitter {
     });
 
     proc.onData((data) => {
+      this.appendScrollback(opts.id, data);
       this.emit('data', opts.id, data);
     });
 
@@ -96,7 +102,7 @@ export class PtyManager extends EventEmitter {
       this.sessions.delete(opts.id);
     });
 
-    this.sessions.set(opts.id, { id: opts.id, proc });
+    this.sessions.set(opts.id, { id: opts.id, proc, cols, rows });
     return { id: opts.id };
   }
 
@@ -106,12 +112,28 @@ export class PtyManager extends EventEmitter {
     s.proc.write(data);
   }
 
+  hasSession(id: string): boolean {
+    return this.sessions.has(id);
+  }
+
+  getRecentOutput(id: string): string {
+    return this.scrollback.get(id) ?? '';
+  }
+
+  getDimensions(id: string): { cols: number; rows: number } | null {
+    const s = this.sessions.get(id);
+    return s ? { cols: s.cols, rows: s.rows } : null;
+  }
+
   resize(id: string, cols: number, rows: number): void {
     const s = this.sessions.get(id);
     if (!s) return;
     const dims = safeDims(cols, rows);
     try {
       s.proc.resize(dims.cols, dims.rows);
+      s.cols = dims.cols;
+      s.rows = dims.rows;
+      this.emit('resize', id, dims.cols, dims.rows);
     } catch {
       // ignore resize errors on closed sessions
     }
@@ -185,9 +207,19 @@ export class PtyManager extends EventEmitter {
       // ignore
     }
     this.sessions.delete(id);
+    this.scrollback.delete(id);
   }
 
   disposeAll(): void {
     for (const id of [...this.sessions.keys()]) this.dispose(id);
+  }
+
+  private appendScrollback(id: string, data: string): void {
+    const next = (this.scrollback.get(id) ?? '') + data;
+    if (next.length <= this.maxScrollbackBytes) {
+      this.scrollback.set(id, next);
+      return;
+    }
+    this.scrollback.set(id, next.slice(next.length - this.maxScrollbackBytes));
   }
 }

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types.js';
-import type { AppSettings, LayoutState, PresetLayout, ShortcutAction } from '../shared/types.js';
+import type { AppSettings, LayoutState, PresetLayout, RemoteStatus, ShortcutAction } from '../shared/types.js';
 
 const api = {
   pty: {
@@ -31,6 +31,13 @@ const api = {
   layout: {
     get: (): Promise<LayoutState> => ipcRenderer.invoke(IPC.LAYOUT_GET),
     set: (layout: LayoutState) => ipcRenderer.send(IPC.LAYOUT_SET, layout),
+    onChanged: (cb: (layout: LayoutState) => void) => {
+      const listener = (_: unknown, layout: LayoutState) => cb(layout);
+      ipcRenderer.on(IPC.LAYOUT_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.LAYOUT_CHANGED, listener);
+      };
+    },
   },
   presets: {
     list: (): Promise<PresetLayout[]> => ipcRenderer.invoke(IPC.PRESETS_LIST),
@@ -40,6 +47,19 @@ const api = {
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke(IPC.SETTINGS_GET),
     set: (s: AppSettings) => ipcRenderer.send(IPC.SETTINGS_SET, s),
+  },
+  remote: {
+    getStatus: (): Promise<RemoteStatus> => ipcRenderer.invoke(IPC.REMOTE_STATUS_GET),
+    enable: (opts?: { port?: number; bindHost?: '127.0.0.1' | '0.0.0.0' }): Promise<RemoteStatus> =>
+      ipcRenderer.invoke(IPC.REMOTE_ENABLE, opts),
+    disable: (): Promise<RemoteStatus> => ipcRenderer.invoke(IPC.REMOTE_DISABLE),
+    onStatusChanged: (cb: (status: RemoteStatus) => void) => {
+      const listener = (_: unknown, status: RemoteStatus) => cb(status);
+      ipcRenderer.on(IPC.REMOTE_STATUS_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.REMOTE_STATUS_CHANGED, listener);
+      };
+    },
   },
   onShortcut: (cb: (action: ShortcutAction) => void) => {
     const listener = (_: unknown, action: ShortcutAction) => cb(action);

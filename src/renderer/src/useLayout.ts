@@ -21,6 +21,11 @@ export function useLayout() {
       setLayoutState(l ?? defaultLayout);
       setLoaded(true);
     });
+    const off = window.api.layout.onChanged((l) => {
+      skipPersist.current = true;
+      setLayoutState(l ?? defaultLayout);
+    });
+    return off;
   }, []);
 
   useEffect(() => {

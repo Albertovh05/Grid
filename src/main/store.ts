@@ -21,6 +21,9 @@ const defaultSettings: AppSettings = {
   theme: 'dark',
   fontSize: 13,
   fontFamily: 'SF Mono, JetBrains Mono, Menlo, monospace',
+  remoteEnabled: false,
+  remotePort: 17321,
+  remoteBindHost: '0.0.0.0',
 };
 
 const defaultLayout: LayoutState = {

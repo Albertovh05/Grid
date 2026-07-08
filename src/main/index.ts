@@ -4,16 +4,33 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { PtyManager } from './pty-manager.js';
 import { Store } from './store.js';
+import { RemoteServer } from './remote-server.js';
 import { registerShortcuts, unregisterShortcuts } from './shortcuts.js';
 import { installAppMenu } from './menu.js';
 import { IPC } from '../shared/types.js';
-import type { AppSettings, LayoutState, PresetLayout } from '../shared/types.js';
+import type { AppSettings, LayoutState, PresetLayout, RemoteStatus } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 const pty = new PtyManager();
 const store = new Store();
+store.setSettings({ ...store.getSettings(), remoteEnabled: false });
+
+function sendLayoutChanged(layout: LayoutState): void {
+  mainWindow?.webContents.send(IPC.LAYOUT_CHANGED, layout);
+}
+
+function sendRemoteStatus(status: RemoteStatus): void {
+  mainWindow?.webContents.send(IPC.REMOTE_STATUS_CHANGED, status);
+}
+
+const remote = new RemoteServer({
+  pty,
+  store,
+  onLayoutChanged: sendLayoutChanged,
+  onStatusChanged: sendRemoteStatus,
+});
 
 function createWindow() {
   const ws = store.getWindow();
@@ -103,7 +120,10 @@ app.whenReady().then(() => {
 
   // IPC: layout
   ipcMain.handle(IPC.LAYOUT_GET, () => store.getLayout());
-  ipcMain.on(IPC.LAYOUT_SET, (_e, layout: LayoutState) => store.setLayout(layout));
+  ipcMain.on(IPC.LAYOUT_SET, (_e, layout: LayoutState) => {
+    store.setLayout(layout);
+    sendLayoutChanged(layout);
+  });
 
   // IPC: presets
   ipcMain.handle(IPC.PRESETS_LIST, () => store.listPresets());
@@ -112,7 +132,34 @@ app.whenReady().then(() => {
 
   // settings
   ipcMain.handle(IPC.SETTINGS_GET, () => store.getSettings());
-  ipcMain.on(IPC.SETTINGS_SET, (_e, s: AppSettings) => store.setSettings(s));
+  ipcMain.on(IPC.SETTINGS_SET, (_e, s: AppSettings) => {
+    const current = store.getSettings();
+    store.setSettings(s);
+    if (s.remoteEnabled && !current.remoteEnabled) {
+      void remote
+        .start({ port: s.remotePort, bindHost: s.remoteBindHost })
+        .catch(() => store.setSettings({ ...store.getSettings(), remoteEnabled: false }));
+    } else if (!s.remoteEnabled && current.remoteEnabled) {
+      void remote.stop();
+    }
+  });
+
+  ipcMain.handle(IPC.REMOTE_STATUS_GET, () => remote.getStatus());
+  ipcMain.handle(IPC.REMOTE_ENABLE, async (_e, opts?: { port?: number; bindHost?: '127.0.0.1' | '0.0.0.0' }) => {
+    const settings = store.getSettings();
+    const next: AppSettings = {
+      ...settings,
+      remoteEnabled: true,
+      remotePort: opts?.port ?? settings.remotePort ?? 17321,
+      remoteBindHost: opts?.bindHost ?? settings.remoteBindHost ?? '0.0.0.0',
+    };
+    store.setSettings(next);
+    return remote.start({ port: next.remotePort, bindHost: next.remoteBindHost });
+  });
+  ipcMain.handle(IPC.REMOTE_DISABLE, async () => {
+    store.setSettings({ ...store.getSettings(), remoteEnabled: false });
+    return remote.stop();
+  });
 
   installAppMenu();
   createWindow();
@@ -128,5 +175,6 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   unregisterShortcuts();
+  void remote.stop();
   pty.disposeAll();
 });

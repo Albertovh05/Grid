@@ -14,6 +14,9 @@ export interface AppSettings {
   theme: Theme;
   fontSize: number;
   fontFamily: string;
+  remoteEnabled?: boolean;
+  remotePort?: number;
+  remoteBindHost?: '127.0.0.1' | '0.0.0.0';
 }
 
 export interface ArchivedSpec {
@@ -52,6 +55,19 @@ export interface PtyExitEvent {
   signal?: number;
 }
 
+export interface RemoteStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  bindHost: '127.0.0.1' | '0.0.0.0';
+  urls: string[];
+  pairingUrl: string | null;
+  pairingCode: string | null;
+  pairingQrDataUrl: string | null;
+  clientCount: number;
+  error?: string;
+}
+
 export const IPC = {
   // pty lifecycle
   PTY_CREATE: 'pty:create',
@@ -63,6 +79,10 @@ export const IPC = {
   PTY_HAS_CHILD: 'pty:hasChild',
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  REMOTE_STATUS_GET: 'remote:getStatus',
+  REMOTE_ENABLE: 'remote:enable',
+  REMOTE_DISABLE: 'remote:disable',
+  REMOTE_STATUS_CHANGED: 'remote:statusChanged',
   // window state
   WINDOW_STATE_GET: 'window:getState',
   WINDOW_STATE_SET: 'window:setState',
@@ -74,6 +94,7 @@ export const IPC = {
   // layout
   LAYOUT_GET: 'layout:get',
   LAYOUT_SET: 'layout:set',
+  LAYOUT_CHANGED: 'layout:changed',
   PRESETS_LIST: 'presets:list',
   PRESETS_SAVE: 'presets:save',
   PRESETS_DELETE: 'presets:delete',
