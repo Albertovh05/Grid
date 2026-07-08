@@ -16,7 +16,7 @@ export interface AppSettings {
   fontFamily: string;
   remoteEnabled?: boolean;
   remotePort?: number;
-  remoteBindHost?: '127.0.0.1' | '0.0.0.0';
+  remoteBindHost?: '127.0.0.1' | 'tailscale';
 }
 
 export interface ArchivedSpec {
@@ -59,7 +59,7 @@ export interface RemoteStatus {
   enabled: boolean;
   running: boolean;
   port: number;
-  bindHost: '127.0.0.1' | '0.0.0.0';
+  bindHost: '127.0.0.1' | 'tailscale';
   urls: string[];
   tailscaleUrls: string[];
   tailscaleState?: string;

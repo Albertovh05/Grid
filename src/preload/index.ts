@@ -50,7 +50,7 @@ const api = {
   },
   remote: {
     getStatus: (): Promise<RemoteStatus> => ipcRenderer.invoke(IPC.REMOTE_STATUS_GET),
-    enable: (opts?: { port?: number; bindHost?: '127.0.0.1' | '0.0.0.0' }): Promise<RemoteStatus> =>
+    enable: (opts?: { port?: number; bindHost?: '127.0.0.1' | 'tailscale' }): Promise<RemoteStatus> =>
       ipcRenderer.invoke(IPC.REMOTE_ENABLE, opts),
     disable: (): Promise<RemoteStatus> => ipcRenderer.invoke(IPC.REMOTE_DISABLE),
     onStatusChanged: (cb: (status: RemoteStatus) => void) => {

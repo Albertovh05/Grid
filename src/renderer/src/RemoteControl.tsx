@@ -5,7 +5,7 @@ const defaultStatus: RemoteStatus = {
   enabled: false,
   running: false,
   port: 17321,
-  bindHost: '0.0.0.0',
+  bindHost: 'tailscale',
   urls: [],
   tailscaleUrls: [],
   pairingUrl: null,
@@ -36,7 +36,7 @@ export function RemoteControl() {
     setBusy(true);
     setError(null);
     try {
-      const next = await window.api.remote.enable({ port, bindHost: '0.0.0.0' });
+      const next = await window.api.remote.enable({ port, bindHost: 'tailscale' });
       setStatus(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to enable remote control');
@@ -91,7 +91,8 @@ export function RemoteControl() {
             <>
               <div className={status.tailscaleError ? 'remote-error' : 'remote-meta'}>
                 {status.tailscaleError ??
-                  'Only reachable on this Wi-Fi network. Install Tailscale on this computer and your phone to control it from anywhere.'}
+                  status.error ??
+                  'Tailscale is not connected, so this is reachable only from this computer. Sign in to Tailscale here and on your phone to control it from anywhere.'}
               </div>
               {status.tailscaleState && <div className="remote-meta">Tailscale: {status.tailscaleState}</div>}
             </>
@@ -102,7 +103,7 @@ export function RemoteControl() {
         </>
       ) : (
         <>
-          <div className="remote-meta">Off. Enable only on a network you trust.</div>
+          <div className="remote-meta">Off. When enabled, it's reachable only over your private Tailscale network.</div>
           <label className="remote-port">
             <span>Port</span>
             <input

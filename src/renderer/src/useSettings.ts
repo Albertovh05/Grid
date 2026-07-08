@@ -7,7 +7,7 @@ const defaults: AppSettings = {
   fontFamily: 'SF Mono, JetBrains Mono, Menlo, monospace',
   remoteEnabled: false,
   remotePort: 17321,
-  remoteBindHost: '0.0.0.0',
+  remoteBindHost: 'tailscale',
 };
 
 function effectiveTheme(t: Theme): 'dark' | 'light' {

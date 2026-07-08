@@ -11,7 +11,9 @@ import type { PtyManager } from './pty-manager.js';
 import type { Store } from './store.js';
 import type { LayoutState, RemoteStatus, TerminalSpec } from '../shared/types.js';
 
-type BindHost = '127.0.0.1' | '0.0.0.0';
+// Requested exposure: loopback only (local/tests) or the tailnet. We never bind
+// 0.0.0.0 — a full shell must not be reachable by the whole LAN.
+type BindHost = '127.0.0.1' | 'tailscale';
 
 interface RemoteServerOptions {
   pty: PtyManager;
@@ -21,7 +23,7 @@ interface RemoteServerOptions {
 }
 
 const require = createRequire(import.meta.url);
-type TailscaleRemoteState = Pick<RemoteStatus, 'tailscaleState' | 'tailscaleError'>;
+type TailscaleRemoteState = Pick<RemoteStatus, 'tailscaleState' | 'tailscaleError'> & { tailnetIp?: string };
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
@@ -81,21 +83,11 @@ function safePort(value: number | undefined): number {
   return Number.isInteger(value) && value && value >= 1024 && value <= 65535 ? value : 17321;
 }
 
-function localUrls(port: number, bindHost: BindHost): string[] {
-  const urls = new Set<string>();
-  if (bindHost === '127.0.0.1') {
-    urls.add(`http://127.0.0.1:${port}/remote`);
-    return [...urls];
-  }
-  urls.add(`http://localhost:${port}/remote`);
-  for (const interfaces of Object.values(os.networkInterfaces())) {
-    for (const item of interfaces ?? []) {
-      if (item.family === 'IPv4' && !item.internal) {
-        urls.add(`http://${item.address}:${port}/remote`);
-      }
-    }
-  }
-  return [...urls];
+// We bind a single concrete address, so we advertise exactly that address — no LAN
+// interface enumeration that could hand out a route we did not open.
+function localUrls(port: number, listenHost: string): string[] {
+  const host = listenHost === '127.0.0.1' ? '127.0.0.1' : listenHost;
+  return [`http://${host}:${port}/remote`];
 }
 
 // IPv4-only, matching the existing IPv4-only scope of localUrls(). Tailscale also
@@ -178,7 +170,8 @@ export class RemoteServer {
   private pairingQrDataUrl: string | null = null;
   private pairingQrUrl: string | null = null;
   private port = 17321;
-  private bindHost: BindHost = '0.0.0.0';
+  private bindHost: BindHost = 'tailscale';
+  private listenHost = '127.0.0.1';
   private error: string | undefined;
   private tailscaleState: TailscaleRemoteState = {};
   private statusTimer: NodeJS.Timeout | null = null;
@@ -197,17 +190,35 @@ export class RemoteServer {
   async start(opts: { port?: number; bindHost?: BindHost; tailscale?: TailscaleRemoteState }): Promise<RemoteStatus> {
     if (this.server) await this.stop();
     this.port = safePort(opts.port);
-    this.bindHost = opts.bindHost ?? '0.0.0.0';
+    // Anything that isn't an explicit loopback request means "tailnet". Legacy
+    // stored settings may still say '0.0.0.0'; treat that as tailnet too.
+    this.bindHost = opts.bindHost === '127.0.0.1' ? '127.0.0.1' : 'tailscale';
     this.tailscaleState = opts.tailscale ?? {};
     this.error = undefined;
     this.pairFailures = 0;
     this.pairLockedUntil = 0;
     this.rotatePairingCode();
 
+    // Resolve the concrete address. Tailnet mode binds ONLY the tailnet IP so the
+    // shell is unreachable off the tailnet; with no tailnet IP we fall back to
+    // loopback (unreachable from the phone) rather than exposing the LAN.
+    if (this.bindHost === '127.0.0.1') {
+      this.listenHost = '127.0.0.1';
+    } else if (this.tailscaleState.tailnetIp) {
+      this.listenHost = this.tailscaleState.tailnetIp;
+    } else {
+      this.listenHost = '127.0.0.1';
+      this.error =
+        this.tailscaleState.tailscaleError ??
+        'Tailscale is not connected, so remote access is limited to this computer. Sign in to Tailscale to reach it from your phone.';
+    }
+
     this.server = http.createServer((req, res) => {
       void this.handleHttp(req, res).catch(() => json(res, 500, { error: 'internal error' }));
     });
-    this.wss = new WebSocketServer({ noServer: true });
+    // Cap frame size: terminal input is tiny, so this just denies memory-exhaustion
+    // attempts from an authenticated-but-hostile client.
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
     this.server.on('upgrade', (req, socket, head) => {
       void this.handleUpgrade(req, socket, head);
     });
@@ -218,7 +229,7 @@ export class RemoteServer {
         reject(err);
       };
       this.server?.once('error', onError);
-      this.server?.listen(this.port, this.bindHost, () => {
+      this.server?.listen(this.port, this.listenHost, () => {
         this.server?.off('error', onError);
         resolve();
       });
@@ -253,7 +264,7 @@ export class RemoteServer {
   }
 
   async getStatus(): Promise<RemoteStatus> {
-    const urls = localUrls(this.port, this.bindHost);
+    const urls = localUrls(this.port, this.listenHost);
     const tailUrls = tailscaleUrls(urls);
     const preferredUrl = preferredRemoteUrl(urls);
     const pairingUrl = this.pairingCode && preferredUrl ? `${preferredUrl}?pair=${encodeURIComponent(this.pairingCode)}` : null;
@@ -288,7 +299,19 @@ export class RemoteServer {
     }
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/remote')) {
-      text(res, 200, remoteHtml(), 'text/html; charset=utf-8');
+      const body = remoteHtml();
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': Buffer.byteLength(body),
+        'content-security-policy':
+          "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+          "img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; " +
+          "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'no-referrer',
+      });
+      res.end(body);
       return;
     }
     if (req.method === 'GET' && url.pathname === '/vendor/xterm.css') {

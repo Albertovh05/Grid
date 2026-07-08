@@ -44,6 +44,7 @@ async function startRemoteFromSettings(settings: AppSettings): Promise<RemoteSta
       ? {
           tailscaleState: tailscale.state,
           tailscaleError: tailscale.ok ? undefined : tailscale.error,
+          tailnetIp: tailscale.tailnetIp,
         }
       : undefined,
   });
@@ -160,13 +161,14 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle(IPC.REMOTE_STATUS_GET, () => remote.getStatus());
-  ipcMain.handle(IPC.REMOTE_ENABLE, async (_e, opts?: { port?: number; bindHost?: '127.0.0.1' | '0.0.0.0' }) => {
+  ipcMain.handle(IPC.REMOTE_ENABLE, async (_e, opts?: { port?: number; bindHost?: '127.0.0.1' | 'tailscale' }) => {
     const settings = store.getSettings();
+    const requestedBindHost = opts?.bindHost ?? settings.remoteBindHost ?? 'tailscale';
     const next: AppSettings = {
       ...settings,
       remoteEnabled: true,
       remotePort: opts?.port ?? settings.remotePort ?? 17321,
-      remoteBindHost: opts?.bindHost ?? settings.remoteBindHost ?? '0.0.0.0',
+      remoteBindHost: requestedBindHost === '127.0.0.1' ? '127.0.0.1' : 'tailscale',
     };
     store.setSettings(next);
     return startRemoteFromSettings(next);

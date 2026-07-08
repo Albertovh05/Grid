@@ -56,10 +56,15 @@ function windowsTailscaleCandidates(binary: string): string[] {
 }
 
 async function findTailscaleCommand(): Promise<string | null> {
-  if (await commandExists('tailscale')) return 'tailscale';
-
+  // Prefer the known install paths over a bare PATH lookup: on Windows CreateProcess
+  // searches the current directory before PATH, so a stray tailscale.exe next to the
+  // app could otherwise be executed.
   const candidates = windowsTailscaleCandidates('tailscale.exe');
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  const installed = candidates.find((candidate) => fs.existsSync(candidate));
+  if (installed) return installed;
+
+  if (await commandExists('tailscale')) return 'tailscale';
+  return null;
 }
 
 function findTailscaleClientCommand(): string | null {

@@ -23,7 +23,7 @@ const defaultSettings: AppSettings = {
   fontFamily: 'SF Mono, JetBrains Mono, Menlo, monospace',
   remoteEnabled: false,
   remotePort: 17321,
-  remoteBindHost: '0.0.0.0',
+  remoteBindHost: 'tailscale',
 };
 
 const defaultLayout: LayoutState = {
