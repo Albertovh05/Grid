@@ -123,6 +123,45 @@ function tokenFromRequest(req: IncomingMessage, url: URL): string | null {
   return url.searchParams.get('token');
 }
 
+// Full interactive shells sit behind this server, so we lock the transport down:
+const SESSION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-pair weekly
+const PAIR_MAX_FAILURES = 5;
+const PAIR_LOCKOUT_MS = 30_000;
+const MAX_REMOTE_TERMINALS = 24; // fork-bomb guard
+
+function isIpLiteralHost(hostname: string): boolean {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return true; // IPv4
+  return hostname.startsWith('['); // WHATWG URL brackets IPv6 literals
+}
+
+// DNS-rebinding guard: a legitimate client reaches us by IP literal, localhost, or a
+// MagicDNS (*.ts.net) name. A malicious site rebinding its own domain to our LAN IP
+// arrives with that domain in the Host/Origin header and is rejected.
+function isAllowedHost(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${hostHeader}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true;
+  if (hostname.endsWith('.ts.net')) return true;
+  return isIpLiteralHost(hostname);
+}
+
+// Reject cross-origin browser requests. Native clients omit Origin and are allowed
+// (they still need a valid bearer token).
+function isOriginAllowed(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return isAllowedHost(new URL(origin).host);
+  } catch {
+    return false;
+  }
+}
+
 export class RemoteServer {
   private readonly pty: PtyManager;
   private readonly store: Store;
@@ -131,7 +170,9 @@ export class RemoteServer {
   private server: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private clients = new Set<WebSocket>();
-  private sessionTokens = new Set<string>();
+  private sessionTokens = new Map<string, number>(); // token -> expiry (ms epoch)
+  private pairFailures = 0;
+  private pairLockedUntil = 0;
   private pairingCode: string | null = null;
   private pairingHash: string | null = null;
   private pairingQrDataUrl: string | null = null;
@@ -159,9 +200,9 @@ export class RemoteServer {
     this.bindHost = opts.bindHost ?? '0.0.0.0';
     this.tailscaleState = opts.tailscale ?? {};
     this.error = undefined;
-    const pairingCode = randomBytes(4).toString('hex');
-    this.pairingCode = pairingCode;
-    this.pairingHash = hash(pairingCode);
+    this.pairFailures = 0;
+    this.pairLockedUntil = 0;
+    this.rotatePairingCode();
 
     this.server = http.createServer((req, res) => {
       void this.handleHttp(req, res).catch(() => json(res, 500, { error: 'internal error' }));
@@ -194,6 +235,8 @@ export class RemoteServer {
   async stop(): Promise<RemoteStatus> {
     this.stopStatusPolling();
     this.sessionTokens.clear();
+    this.pairFailures = 0;
+    this.pairLockedUntil = 0;
     this.pairingCode = null;
     this.pairingHash = null;
     this.pairingQrDataUrl = null;
@@ -239,6 +282,10 @@ export class RemoteServer {
   }
 
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!isAllowedHost(req.headers.host) || !isOriginAllowed(req)) {
+      json(res, 403, { error: 'forbidden host' });
+      return;
+    }
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/remote')) {
       text(res, 200, remoteHtml(), 'text/html; charset=utf-8');
@@ -257,14 +304,27 @@ export class RemoteServer {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/pair') {
+      if (Date.now() < this.pairLockedUntil) {
+        json(res, 429, { error: 'too many attempts, try again shortly' });
+        return;
+      }
       const body = (await readBody(req)) as { pairingToken?: string };
       const incoming = String(body.pairingToken ?? '');
       if (!incoming || !this.pairingHash || hash(incoming) !== this.pairingHash) {
+        if (++this.pairFailures >= PAIR_MAX_FAILURES) {
+          this.pairLockedUntil = Date.now() + PAIR_LOCKOUT_MS;
+          this.pairFailures = 0;
+        }
         json(res, 401, { error: 'invalid pairing token' });
         return;
       }
+      this.pairFailures = 0;
       const token = randomBytes(32).toString('hex');
-      this.sessionTokens.add(token);
+      this.sessionTokens.set(token, Date.now() + SESSION_TOKEN_TTL_MS);
+      // Single-use: burn the code so a racing brute-forcer can't reuse it, then
+      // surface the fresh QR/code on the desktop for the next device.
+      this.rotatePairingCode();
+      this.emitStatus();
       json(res, 200, { token });
       return;
     }
@@ -277,6 +337,10 @@ export class RemoteServer {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions') {
+      if (this.store.getLayout().terminals.length >= MAX_REMOTE_TERMINALS) {
+        json(res, 429, { error: 'too many terminals open' });
+        return;
+      }
       const body = (await readBody(req)) as { cwd?: string; shell?: string; title?: string };
       const terminal = this.createTerminal(body);
       json(res, 201, { terminal, layout: this.store.getLayout() });
@@ -313,6 +377,11 @@ export class RemoteServer {
   }
 
   private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    if (!isAllowedHost(req.headers.host) || !isOriginAllowed(req)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pty$/);
     if (!match || !this.isAuthorized(req, url) || !this.wss) {
@@ -354,7 +423,22 @@ export class RemoteServer {
 
   private isAuthorized(req: IncomingMessage, url: URL): boolean {
     const token = tokenFromRequest(req, url);
-    return Boolean(token && this.sessionTokens.has(token));
+    if (!token) return false;
+    const expiry = this.sessionTokens.get(token);
+    if (!expiry) return false;
+    if (Date.now() > expiry) {
+      this.sessionTokens.delete(token);
+      return false;
+    }
+    return true;
+  }
+
+  private rotatePairingCode(): void {
+    const pairingCode = randomBytes(4).toString('hex');
+    this.pairingCode = pairingCode;
+    this.pairingHash = hash(pairingCode);
+    this.pairingQrDataUrl = null;
+    this.pairingQrUrl = null;
   }
 
   private createTerminal(body: { cwd?: string; shell?: string; title?: string }): TerminalSpec {

@@ -1,9 +1,37 @@
 import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import fs from 'fs';
 import net from 'net';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import { launchApp, newTerminalViaButton } from './helpers';
+
+function rawRequest(
+  port: number,
+  opts: { method?: string; pathName?: string; host?: string; body?: string }
+): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        method: opts.method ?? 'GET',
+        path: opts.pathName ?? '/remote',
+        headers: {
+          host: opts.host ?? `127.0.0.1:${port}`,
+          ...(opts.body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(opts.body) } : {}),
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+      }
+    );
+    req.on('error', reject);
+    if (opts.body) req.write(opts.body);
+    req.end();
+  });
+}
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -88,6 +116,33 @@ test('remote shortcut bar sends Ctrl+U and phone scroll input', async () => {
       expect.stringMatching(/\x1b\[<65;\d+;\d+M/),
     ])
   );
+
+  await app.close();
+});
+
+test('remote server rejects rebinding hosts and locks out pairing brute force', async () => {
+  const { app, window } = await launchApp();
+  const port = await freePort();
+  await window.evaluate((remotePort) => {
+    return (window as unknown as { api: { remote: { enable: (opts: { port: number; bindHost: '127.0.0.1' }) => Promise<unknown> } } }).api.remote.enable({
+      port: remotePort,
+      bindHost: '127.0.0.1',
+    });
+  }, port);
+
+  // DNS-rebinding guard: an attacker-controlled domain in the Host header is refused.
+  expect((await rawRequest(port, { host: 'evil.example.com' })).status).toBe(403);
+  // A legitimate IP-literal host is served.
+  expect((await rawRequest(port, { host: `127.0.0.1:${port}` })).status).toBe(200);
+
+  // Brute-force lockout: repeated bad pairing codes get throttled with 429.
+  const statuses: number[] = [];
+  for (let i = 0; i < 7; i++) {
+    statuses.push(
+      (await rawRequest(port, { method: 'POST', pathName: '/api/pair', body: JSON.stringify({ pairingToken: 'zzzzzzzz' }) })).status
+    );
+  }
+  expect(statuses).toContain(429);
 
   await app.close();
 });
