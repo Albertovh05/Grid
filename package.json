@@ -1,7 +1,7 @@
 {
   "name": "terminal-grid",
   "productName": "Grid",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Dynamic grid of terminal emulators backed by persistent user sessions",
   "main": "out/main/index.js",
   "author": "Albertovh05",

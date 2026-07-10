@@ -614,20 +614,20 @@ function remoteHtml(): string {
     :root { color-scheme: dark; --bg:#0a0a0c; --panel:#14141a; --fg:#e6e6ec; --muted:#92929f; --border:#292934; --accent:#7c5cff; --danger:#ff5577; }
     * { box-sizing: border-box; }
     html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; }
-    body { display:flex; flex-direction:column; overflow:hidden; }
-    header { height:48px; display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border); background:var(--panel); }
+    body { min-height:100%; height:100dvh; display:grid; grid-template-rows:auto minmax(0,1fr) auto; overflow:hidden; }
+    header { min-height:48px; display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border); background:var(--panel); }
     select, input, button { font:inherit; color:var(--fg); background:#1c1c24; border:1px solid var(--border); border-radius:7px; padding:8px; }
     button { cursor:pointer; }
     button.primary { background:var(--accent); border-color:var(--accent); }
     button.danger { color:var(--danger); }
     #sessionSelect { flex:1; min-width:0; }
-    #terminal { flex:1; min-height:0; padding:6px; overflow:auto; touch-action:none; overscroll-behavior:contain; }
+    #terminal { min-height:0; padding:6px; overflow:auto; touch-action:none; overscroll-behavior:contain; }
     #terminal .xterm { display:inline-block; min-width:100%; }
     #pair { position:fixed; inset:0; display:none; align-items:center; justify-content:center; padding:20px; background:var(--bg); z-index:10; }
     #pair form { width:min(420px,100%); display:grid; gap:12px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
     #pair h1 { font-size:20px; margin:0; }
     #pair p, #status { color:var(--muted); margin:0; font-size:13px; }
-    #keys { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; padding:6px; padding-bottom:max(6px, env(safe-area-inset-bottom)); border-top:1px solid var(--border); background:var(--panel); }
+    #keys { min-height:0; display:grid; grid-template-columns:repeat(8,1fr); gap:5px; padding:6px; padding-bottom:max(6px, env(safe-area-inset-bottom)); border-top:1px solid var(--border); background:var(--panel); }
     #keys button { padding:10px 2px; font-size:13px; }
     #keys button.accent { background:var(--accent); border-color:var(--accent); color:white; font-weight:600; }
     #keysToggle { grid-column:1 / -1; padding:8px; color:var(--muted); }

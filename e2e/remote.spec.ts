@@ -63,6 +63,31 @@ async function inputFrames(page: Page): Promise<string[]> {
   });
 }
 
+async function expectTerminalAboveShortcutControls(page: Page): Promise<void> {
+  const layout = await page.evaluate(() => {
+    const terminal = document.getElementById('terminal');
+    const keys = document.getElementById('keys');
+    const keysToggle = document.getElementById('keysToggle');
+    if (!terminal || !keys || !keysToggle) throw new Error('remote layout elements missing');
+
+    const terminalRect = terminal.getBoundingClientRect();
+    const keysRect = keys.getBoundingClientRect();
+    const toggleRect = keysToggle.getBoundingClientRect();
+
+    return {
+      terminalBottom: terminalRect.bottom,
+      keysTop: keysRect.top,
+      keysBottom: keysRect.bottom,
+      toggleTop: toggleRect.top,
+      viewportHeight: window.innerHeight,
+    };
+  });
+
+  expect(layout.terminalBottom).toBeLessThanOrEqual(layout.keysTop + 1);
+  expect(layout.terminalBottom).toBeLessThanOrEqual(layout.toggleTop + 1);
+  expect(layout.keysBottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
+}
+
 test('remote shortcut bar sends Ctrl+U and phone scroll input', async () => {
   const { app, window } = await launchApp();
   await newTerminalViaButton(window);
@@ -84,9 +109,16 @@ test('remote shortcut bar sends Ctrl+U and phone scroll input', async () => {
       return originalSend.call(this, data);
     };
   });
+  await window.setViewportSize({ width: 390, height: 720 });
 
   await window.goto(`http://127.0.0.1:${port}/remote?pair=${encodeURIComponent(status.pairingCode!)}`);
   await expect(window.locator('#terminal .xterm')).toBeVisible({ timeout: 5000 });
+  await expectTerminalAboveShortcutControls(window);
+
+  await window.getByRole('button', { name: 'Hide shortcuts' }).click();
+  await expectTerminalAboveShortcutControls(window);
+  await window.getByRole('button', { name: 'Show shortcuts' }).click();
+  await expectTerminalAboveShortcutControls(window);
 
   const shiftTab = window.locator('button[data-key="shift-tab"]');
   const ctrlU = window.locator('button[data-key="ctrl-u"]');
