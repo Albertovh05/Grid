@@ -56,6 +56,19 @@ export function RemoteControl() {
     }
   };
 
+  const resetCode = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await window.api.remote.resetCode();
+      setStatus(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset pairing code');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const primaryUrl = status.tailscaleUrls[0] ?? status.urls.find((url) => !url.includes('localhost')) ?? status.urls[0];
   const isTailscale = Boolean(primaryUrl && status.tailscaleUrls.includes(primaryUrl));
 
@@ -74,8 +87,17 @@ export function RemoteControl() {
             <img className="remote-qr" src={status.pairingQrDataUrl} alt="Remote pairing QR code" />
           )}
           {status.pairingCode && (
-            <div className="remote-code" title="Pairing code">
-              {status.pairingCode}
+            <div className="remote-code-row">
+              <button
+                className="remote-code"
+                title="Copy pairing code"
+                onClick={() => void navigator.clipboard.writeText(status.pairingCode ?? '')}
+              >
+                {status.pairingCode}
+              </button>
+              <button className="remote-reset" disabled={busy} title="Generate a new code" onClick={resetCode}>
+                Reset
+              </button>
             </div>
           )}
           {primaryUrl && (

@@ -197,7 +197,7 @@ export class RemoteServer {
     this.error = undefined;
     this.pairFailures = 0;
     this.pairLockedUntil = 0;
-    this.rotatePairingCode();
+    this.loadPairingCode();
 
     // Resolve the concrete address. Tailnet mode binds ONLY the tailnet IP so the
     // shell is unreachable off the tailnet; with no tailnet IP we fall back to
@@ -344,9 +344,9 @@ export class RemoteServer {
       this.pairFailures = 0;
       const token = randomBytes(32).toString('hex');
       this.sessionTokens.set(token, Date.now() + SESSION_TOKEN_TTL_MS);
-      // Single-use: burn the code so a racing brute-forcer can't reuse it, then
-      // surface the fresh QR/code on the desktop for the next device.
-      this.rotatePairingCode();
+      // The pairing code is a persistent secret (like a password) so the user can
+      // pair a new device anytime without being at the desktop. Brute force is
+      // still bounded by PAIR_MAX_FAILURES/PAIR_LOCKOUT_MS; reset it from the UI if leaked.
       this.emitStatus();
       json(res, 200, { token });
       return;
@@ -456,12 +456,38 @@ export class RemoteServer {
     return true;
   }
 
-  private rotatePairingCode(): void {
-    const pairingCode = randomBytes(4).toString('hex');
-    this.pairingCode = pairingCode;
-    this.pairingHash = hash(pairingCode);
+  // Load the persisted pairing code so it survives restarts; mint and persist one
+  // on first ever use.
+  private loadPairingCode(): void {
+    const stored = this.store.getPairingCode();
+    if (stored) {
+      this.setPairingCode(stored);
+    } else {
+      this.rotatePairingCode();
+    }
+  }
+
+  private setPairingCode(code: string): void {
+    this.pairingCode = code;
+    this.pairingHash = hash(code);
     this.pairingQrDataUrl = null;
     this.pairingQrUrl = null;
+  }
+
+  private rotatePairingCode(): void {
+    const pairingCode = randomBytes(4).toString('hex');
+    this.setPairingCode(pairingCode);
+    this.store.setPairingCode(pairingCode);
+  }
+
+  // User-triggered: invalidate the old code and mint a fresh persistent one. Existing
+  // session tokens keep working; only new pairings need the new code.
+  async resetPairingCode(): Promise<RemoteStatus> {
+    this.rotatePairingCode();
+    this.pairFailures = 0;
+    this.pairLockedUntil = 0;
+    this.emitStatus();
+    return await this.getStatus();
   }
 
   private createTerminal(body: { cwd?: string; shell?: string; title?: string }): TerminalSpec {

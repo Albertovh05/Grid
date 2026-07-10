@@ -160,6 +160,11 @@ input:focus { border-color: var(--accent); }
   border-radius: 6px;
   border: 1px solid var(--border);
 }
+.remote-code-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
 .remote-code {
   font-family: var(--mono);
   text-align: center;
@@ -169,6 +174,10 @@ input:focus { border-color: var(--accent); }
   border-radius: 6px;
   padding: 6px;
   user-select: text;
+  cursor: pointer;
+}
+.remote-reset {
+  color: var(--fg-dim);
 }
 .remote-url,
 .remote-disable {

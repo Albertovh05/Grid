@@ -85,6 +85,7 @@ export const IPC = {
   REMOTE_STATUS_GET: 'remote:getStatus',
   REMOTE_ENABLE: 'remote:enable',
   REMOTE_DISABLE: 'remote:disable',
+  REMOTE_RESET_CODE: 'remote:resetCode',
   REMOTE_STATUS_CHANGED: 'remote:statusChanged',
   // window state
   WINDOW_STATE_GET: 'window:getState',

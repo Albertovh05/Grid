@@ -177,6 +177,7 @@ app.whenReady().then(() => {
     store.setSettings({ ...store.getSettings(), remoteEnabled: false });
     return remote.stop();
   });
+  ipcMain.handle(IPC.REMOTE_RESET_CODE, () => remote.resetPairingCode());
 
   installAppMenu();
   createWindow();

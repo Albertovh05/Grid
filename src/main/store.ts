@@ -14,6 +14,7 @@ type Schema = {
   presets: PresetLayout[];
   window: WindowState;
   settings: AppSettings;
+  remotePairingCode: string | null;
 };
 
 const defaultWindow: WindowState = { width: 1400, height: 900 };
@@ -44,8 +45,17 @@ export class Store {
         presets: [],
         window: defaultWindow,
         settings: defaultSettings,
+        remotePairingCode: null,
       },
     });
+  }
+
+  getPairingCode(): string | null {
+    return this.store.get('remotePairingCode', null);
+  }
+
+  setPairingCode(code: string | null): void {
+    this.store.set('remotePairingCode', code);
   }
 
   getSettings(): AppSettings {
