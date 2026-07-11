@@ -9,7 +9,7 @@ import { launchApp, newTerminalViaButton } from './helpers';
 function rawRequest(
   port: number,
   opts: { method?: string; pathName?: string; host?: string; body?: string }
-): Promise<{ status: number }> {
+): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -24,7 +24,7 @@ function rawRequest(
       },
       (res) => {
         res.resume();
-        res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers }));
       }
     );
     req.on('error', reject);
@@ -88,9 +88,28 @@ async function expectTerminalAboveShortcutControls(page: Page): Promise<void> {
   expect(layout.keysBottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
 }
 
+async function expectEveryRemoteSessionSeparated(page: Page): Promise<void> {
+  const ids = await page.locator('#sessionSelect option').evaluateAll((options) =>
+    options.map((option) => (option as HTMLOptionElement).value)
+  );
+  for (const id of ids) {
+    await page.locator('#sessionSelect').selectOption(id);
+    await expectTerminalAboveShortcutControls(page);
+  }
+}
+
 test('remote shortcut bar sends Ctrl+U and phone scroll input', async () => {
   const { app, window } = await launchApp();
   await newTerminalViaButton(window);
+  await newTerminalViaButton(window);
+  await window.evaluate(async () => {
+    const api = (window as unknown as {
+      api: { layout: { get: () => Promise<{ terminals: Array<{ id: string }> }> }; pty: { resize: (id: string, cols: number, rows: number) => void } };
+    }).api;
+    const layout = await api.layout.get();
+    api.pty.resize(layout.terminals[0].id, 120, 42);
+    api.pty.resize(layout.terminals[1].id, 80, 18);
+  });
 
   const port = await freePort();
   const status = await window.evaluate((remotePort) => {
@@ -113,12 +132,24 @@ test('remote shortcut bar sends Ctrl+U and phone scroll input', async () => {
 
   await window.goto(`http://127.0.0.1:${port}/remote?pair=${encodeURIComponent(status.pairingCode!)}`);
   await expect(window.locator('#terminal .xterm')).toBeVisible({ timeout: 5000 });
-  await expectTerminalAboveShortcutControls(window);
+  await expect(window.locator('body')).toHaveAttribute('data-grid-version', /\d+\.\d+\.\d+/);
+  await expectEveryRemoteSessionSeparated(window);
 
   await window.getByRole('button', { name: 'Hide shortcuts' }).click();
   await expectTerminalAboveShortcutControls(window);
   await window.getByRole('button', { name: 'Show shortcuts' }).click();
-  await expectTerminalAboveShortcutControls(window);
+  await expectEveryRemoteSessionSeparated(window);
+
+  await window.getByRole('button', { name: 'New' }).click();
+  await expect(window.locator('#sessionSelect option')).toHaveCount(3);
+  await expectEveryRemoteSessionSeparated(window);
+  await window.getByRole('button', { name: 'Close' }).click();
+  await expect(window.locator('#sessionSelect option')).toHaveCount(2);
+  await expectEveryRemoteSessionSeparated(window);
+  await window.setViewportSize({ width: 720, height: 390 });
+  await expectEveryRemoteSessionSeparated(window);
+  await window.setViewportSize({ width: 390, height: 720 });
+  await expectEveryRemoteSessionSeparated(window);
 
   const shiftTab = window.locator('button[data-key="shift-tab"]');
   const ctrlU = window.locator('button[data-key="ctrl-u"]');
@@ -165,7 +196,9 @@ test('remote server rejects rebinding hosts and locks out pairing brute force', 
   // DNS-rebinding guard: an attacker-controlled domain in the Host header is refused.
   expect((await rawRequest(port, { host: 'evil.example.com' })).status).toBe(403);
   // A legitimate IP-literal host is served.
-  expect((await rawRequest(port, { host: `127.0.0.1:${port}` })).status).toBe(200);
+  const remotePage = await rawRequest(port, { host: `127.0.0.1:${port}` });
+  expect(remotePage.status).toBe(200);
+  expect(remotePage.headers['cache-control']).toBe('no-store');
 
   // Brute-force lockout: repeated bad pairing codes get throttled with 429.
   const statuses: number[] = [];
